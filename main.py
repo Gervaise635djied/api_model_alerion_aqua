@@ -1,10 +1,12 @@
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Security, Depends
 from fastapi.responses import JSONResponse
+from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel
 import numpy as np
 import joblib
 import traceback
+import os
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
@@ -17,6 +19,26 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Récupération de la clé depuis les variables d'environnement
+API_KEY = os.environ.get("API_KEY")
+
+# Solution pour le développement local
+if not API_KEY:
+    import secrets
+    API_KEY = secrets.token_urlsafe(32)
+    print(f"Clé API temporaire : {API_KEY}")
+
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+async def verify_api_key(api_key: str = Depends(api_key_header)):
+    if not api_key or api_key != API_KEY:
+        raise HTTPException(
+            status_code=401,
+            detail="Clé API invalide ou manquante",
+            headers={"WWW-Authenticate": "APIKey"}
+        )
+    return api_key
 
 # === Modèle de données ===
 class AquacultureInput(BaseModel):
@@ -52,15 +74,13 @@ async def global_exception_handler(request: Request, exc: Exception):
 # === Route d'accueil ===
 @app.get("/")
 def home():
-    return {"message": "Bienvenue sur l’API de prédiction d’espèces aquacoles (modèle Random Forest)"}
+    return {"message": "Bienvenue sur l'API de prédiction d'espèces aquacoles"}
 
-# === Route de prédiction ===
-@app.post("/predict")
+# === Route de prédiction PROTÉGÉE ===
+@app.post("/predict", dependencies=[Depends(verify_api_key)])
 def predict_species(data: AquacultureInput):
     try:
         input_array = np.array([[data.temperature, data.ph, data.nh3, data.oxygen, data.salinite]])
-
-        # Prédiction
         predicted_index = int(model.predict(input_array)[0])
         predicted_species = label_encoder.inverse_transform([predicted_index])[0]
 
@@ -73,8 +93,6 @@ def predict_species(data: AquacultureInput):
         raise HTTPException(status_code=400, detail=f"Erreur de valeur : {str(ve)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur interne : {str(e)}")
-
-
 
 
 if __name__ == "__main__":
