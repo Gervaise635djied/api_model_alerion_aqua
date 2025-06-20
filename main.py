@@ -1,24 +1,24 @@
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import numpy as np
-import joblib  # pour charger le LabelEncoder
-
+import joblib
+import traceback
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
-# Autoriser toutes les origines (sécurise plus tard si besoin)
+
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Autorise toutes les origines
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
-
-# === Définir les données attendues pour la prédiction ===
+# === Modèle de données ===
 class AquacultureInput(BaseModel):
     temperature: float
     ph: float
@@ -26,43 +26,61 @@ class AquacultureInput(BaseModel):
     oxygen: float
     salinite: float
 
-# === Charger le modèle ===
-def load_model():
-    return joblib.load("aquaculture_model.pkl")
+# === Chargement du modèle et du label encoder ===
+try:
+    model = joblib.load("aquaculture_model.pkl")
+except Exception as e:
+    raise RuntimeError("Erreur lors du chargement du modèle : " + str(e))
 
-# 🔹 Charger le LabelEncoder
-def load_encoder():
-    return joblib.load("label_encoder.pkl")
+try:
+    label_encoder = joblib.load("label_encoder.pkl")
+except Exception as e:
+    raise RuntimeError("Erreur lors du chargement du LabelEncoder : " + str(e))
 
-# Charger au démarrage
-model = load_model()
-label_encoder = load_encoder()
+# === Gestion des erreurs globales ===
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "Erreur interne du serveur",
+            "error": str(exc),
+            "trace": traceback.format_exc()
+        },
+    )
 
-# === Routes === test de connexion
+# === Route d'accueil ===
 @app.get("/")
-def great():
-    return {"message":"Bienvenue sur l’API de prédiction d’espèces aquacoles (modèle Random Forest)"}
+def home():
+    return {"message": "Bienvenue sur l’API de prédiction d’espèces aquacoles (modèle Random Forest)"}
 
+# === Route de prédiction ===
 @app.post("/predict")
 def predict_species(data: AquacultureInput):
-    # Convertir les données en tableau numpy
-    input_array = np.array([[data.temperature, data.ph,data.nh3, data.oxygen, data.salinite]])
+    try:
+        input_array = np.array([[data.temperature, data.ph, data.nh3, data.oxygen, data.salinite]])
 
-    # Faire la prédiction
-    predicted_index = int(model.predict(input_array)[0])
+        # Prédiction
+        predicted_index = int(model.predict(input_array)[0])
+        predicted_species = label_encoder.inverse_transform([predicted_index])[0]
 
+        return {
+            "predicted_class_index": predicted_index,
+            "predicted_species": predicted_species
+        }
 
-    # Utiliser le label encoder pour obtenir le nom de l'espèce
-    predicted_species = label_encoder.inverse_transform([predicted_index])[0]
-
-    return {
-        "predicted_class_index": int(predicted_index),
-        "predicted_species": predicted_species
-    }
-
-
-
-
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=f"Erreur de valeur : {str(ve)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur interne : {str(e)}")
 
 
+
+
+if __name__ == "__main__":
+    import nest_asyncio
+    import uvicorn
+
+    nest_asyncio.apply()
+    uvicorn.run(app, host="127.0.0.1", port=8001)
 
